@@ -10,7 +10,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/organizations"
 	"github.com/aws/aws-sdk-go/service/resourcegroupstaggingapi"
-	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/openshift/osdctl/pkg/printer"
 	awsprovider "github.com/openshift/osdctl/pkg/provider/aws"
 	"github.com/spf13/cobra"
@@ -92,7 +91,6 @@ func (o *accountUnassignOptions) run() error {
 	}
 
 	o.awsClient = awsClient
-	var allUsers []string
 
 	if o.accountID != "" {
 
@@ -100,7 +98,6 @@ func (o *accountUnassignOptions) run() error {
 		if err != nil {
 			return err
 		}
-		allUsers = append(allUsers, accountUsername)
 		accountIdList = append(accountIdList, o.accountID)
 
 	}
@@ -112,7 +109,6 @@ func (o *accountUnassignOptions) run() error {
 		}
 
 		accountUsername = o.username
-		allUsers = append(allUsers, accountUsername)
 		accountIdList, err = o.listAccountsFromUser(accountUsername)
 		if err != nil {
 			return err
@@ -132,119 +128,57 @@ func (o *accountUnassignOptions) run() error {
 		os.Exit(0)
 	}
 
+	// loop through accounts list and untag and move them back into root OU
 	for _, id := range accountIdList {
-		// untag account
+
 		err = o.untagAccount(id)
 		if err != nil {
 			return err
 		}
-		// move account
+
 		err = o.moveAccount(id, rootID, destinationOU)
 		if err != nil {
 			return err
 		}
-		// instantiate new client with AssumeRole
-		newAWSClient, err := o.assumeRoleForAccount(id)
-		if err != nil {
-			return err
-		}
-		// delete roles
-		err = o.deleteRoles(newAWSClient)
-		if err != nil {
-			return err
-		}
-		// list iam users created by each account and append to slice
-		users, err := o.listUsersFromAccount(newAWSClient, id)
-		if err != nil {
-			return err
-		}
-
-		allUsers = append(allUsers, users...)
-
 	}
 
-	for _, userName := range allUsers {
-
-		// Delete login profile
-		err = o.deleteLoginProfile(userName)
-		if err != nil {
-			return err
-		}
-		// Delete access keys
-		err = o.deleteAccessKeys(userName)
-		if err != nil {
-			return err
-		}
-		// Delete signing certificates
-		err = o.deleteSigningCert(userName)
-		if err != nil {
-			return err
-		}
-		// Delete policies
-		err = o.deletePolicies(userName)
-		if err != nil {
-			return err
-		}
-		// Delete attached policies
-		err = o.deleteAttachedPolicies(userName)
-		if err != nil {
-			return err
-		}
-		// Delete groups
-		err = o.deleteGroups(userName)
-		if err != nil {
-			return err
-		}
-		// Delete user
-		err = o.deleteUser(userName)
-		if err != nil {
-			return err
-		}
+	// Delete login profile
+	err = o.deleteLoginProfile(accountUsername)
+	if err != nil {
+		return err
+	}
+	// Delete access keys
+	err = o.deleteAccessKeys(accountUsername)
+	if err != nil {
+		return err
+	}
+	// Delete signing certificates
+	err = o.deleteSigningCert(accountUsername)
+	if err != nil {
+		return err
+	}
+	// Delete policies
+	err = o.deletePolicies(accountUsername)
+	if err != nil {
+		return err
+	}
+	// Delete attached policies
+	err = o.deleteAttachedPolicies(accountUsername)
+	if err != nil {
+		return err
+	}
+	// Delete groups
+	err = o.deleteGroups(accountUsername)
+	if err != nil {
+		return err
+	}
+	// Delete user
+	err = o.deleteUser(accountUsername)
+	if err != nil {
+		return err
 	}
 
 	return nil
-}
-
-func (o *accountUnassignOptions) assumeRoleForAccount(account_id string) (awsprovider.Client, error) {
-
-	roleArn := fmt.Sprintf("arn:aws:%s:iam::role/OrganizationAccountAccessRole", account_id)
-	input := &sts.AssumeRoleInput{
-		RoleArn:         aws.String(roleArn),
-		RoleSessionName: aws.String("osdctl-account-unassignment"),
-	}
-	result, err := o.awsClient.AssumeRole(input)
-	if err != nil {
-		return nil, err
-	}
-	newAwsClientInput := &awsprovider.AwsClientInput{
-		AccessKeyID:     *result.Credentials.AccessKeyId,
-		SecretAccessKey: *result.Credentials.SecretAccessKey,
-		SessionToken:    *result.Credentials.SessionToken,
-		Region:          "us-east-1",
-	}
-	newAWSClient, err := awsprovider.NewAwsClientWithInput(newAwsClientInput)
-	if err != nil {
-		return nil, err
-	}
-	return newAWSClient, nil
-}
-
-func (o *accountUnassignOptions) listUsersFromAccount(newAWSClient awsprovider.Client, account_id string) ([]string, error) {
-
-	listInput := &iam.ListUsersInput{}
-
-	users, err := newAWSClient.ListUsers(listInput)
-	if err != nil {
-		return []string{}, err
-	}
-
-	var userList []string
-
-	for _, u := range users.Users {
-		userList = append(userList, *u.UserName)
-	}
-
-	return userList, nil
 }
 
 var ErrHiveNameProvided error = fmt.Errorf("hive-managed account provided, only developers account accepted")
@@ -434,27 +368,6 @@ func (o *accountUnassignOptions) deleteAttachedPolicies(user string) error {
 		_, err = o.awsClient.DetachUserPolicy(inputDetachPol)
 		if err != nil {
 			return err
-		}
-	}
-	return nil
-}
-
-func (o *accountUnassignOptions) deleteRoles(newAWSClient awsprovider.Client) error {
-
-	listRoleInput := &iam.ListRolesInput{}
-	roles, err := newAWSClient.ListRoles(listRoleInput)
-	if err != nil {
-		return err
-	}
-	// delete all roles except OrganizationAccountAccessRole
-	for _, rolename := range roles.Roles {
-
-		if rolename.RoleName != aws.String("OrganizationAccountAccessRole") {
-
-			_, err := newAWSClient.DeleteRole(&iam.DeleteRoleInput{RoleName: rolename.RoleName})
-			if err != nil {
-				return err
-			}
 		}
 	}
 	return nil
