@@ -207,7 +207,7 @@ func (o *accountUnassignOptions) run() error {
 
 func (o *accountUnassignOptions) assumeRoleForAccount(account_id string) (awsprovider.Client, error) {
 
-	roleArn := fmt.Sprintf("arn:aws:%s:iam::role/OrganizationAccountAccessRole", account_id)
+	roleArn := fmt.Sprintf("arn:aws:iam::%s:role/OrganizationAccountAccessRole", account_id)
 	input := &sts.AssumeRoleInput{
 		RoleArn:         aws.String(roleArn),
 		RoleSessionName: aws.String("osdctl-account-unassignment"),
